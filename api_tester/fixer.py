@@ -25,7 +25,7 @@ Rules:
 - If you cannot fix within one file, still produce your best attempt and set risk to "high".
 """
 
-def propose_fix(diag: Diagnosis, source_root: Path, file_path: str) -> FixProposal:
+def propose_fix(diag: Diagnosis, source_root: Path, file_path: str, trace=None) -> FixProposal:
     target = source_root / file_path
     if not target.exists():
         raise FileNotFoundError(f"File does not exist: {target}")
@@ -45,6 +45,7 @@ def propose_fix(diag: Diagnosis, source_root: Path, file_path: str) -> FixPropos
             fix = chat_json(
                 model=SETTINGS.workhorse_model, system=SYSTEM, user=user,
                 schema=FixProposal, num_ctx=SETTINGS.workhorse_num_ctx, temperature=0.1,
+                trace=trace, kind="fixer",
             )
             break
         except Exception as exc:

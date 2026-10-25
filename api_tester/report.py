@@ -14,6 +14,8 @@ def write_report(report: RunReport, out_dir: Path) -> Path:
              f"**Generated:** {datetime.now().isoformat(timespec='seconds')}\n",
              f"**Total:** {report.total}  |  **Passed:** {report.passed}  |  "
              f"**Failed:** {len(report.failures)}\n"]
+    if report.audit_run_id:
+        lines.append(f"**Audit run:** `{report.audit_run_id}`\n")
     if not report.failures:
         lines.append("\n_All tests passed._\n")
     for i, fr in enumerate(report.failures, 1):

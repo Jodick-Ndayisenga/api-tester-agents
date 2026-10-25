@@ -9,12 +9,35 @@ import yaml
 from .schemas import Endpoint
 
 
-def load_endpoints(spec_path: Path, base_url: str = "") -> list[Endpoint]:
+def load_endpoints(
+    spec_path: Path,
+    base_url: str = "",
+    include_prefix: str | None = None,
+    exclude_prefix: str | None = None,
+    methods: set[str] | None = None,
+    tags: set[str] | None = None,
+) -> list[Endpoint]:
     if spec_path.suffix in (".yaml", ".yml"):
-        return _from_yaml(spec_path)
-    if spec_path.suffix == ".json":
-        return _from_openapi(spec_path)
-    raise ValueError(f"Unsupported spec: {spec_path.suffix}")
+        endpoints = _from_yaml(spec_path)
+    elif spec_path.suffix == ".json":
+        endpoints = _from_openapi(spec_path)
+    else:
+        raise ValueError(f"Unsupported spec: {spec_path.suffix}")
+    return filter_endpoints(endpoints, include_prefix, exclude_prefix, methods, tags)
+
+def filter_endpoints(
+    endpoints: list[Endpoint], include_prefix: str | None = None,
+    exclude_prefix: str | None = None, methods: set[str] | None = None,
+    tags: set[str] | None = None,
+) -> list[Endpoint]:
+    normalized_methods = {method.upper() for method in methods or set()}
+    return [
+        endpoint for endpoint in endpoints
+        if (not include_prefix or endpoint.path.startswith(include_prefix))
+        and (not exclude_prefix or not endpoint.path.startswith(exclude_prefix))
+        and (not normalized_methods or endpoint.method.upper() in normalized_methods)
+        and (not tags or tags.intersection(endpoint.tags))
+    ]
 
 def _from_yaml(path: Path) -> list[Endpoint]:
     data = yaml.safe_load(path.read_text())
@@ -40,7 +63,7 @@ def _from_openapi(path: Path) -> list[Endpoint]:
                 method=method.upper(), path=raw_path,
                 body=_sample_body(op, spec), expect_status=_extract_success_codes(op),
                 path_params=path_params, query=query, headers=headers,
-                required_fields=_extract_required_fields(op),
+                required_fields=_extract_required_fields(op), tags=list(op.get("tags") or []),
             ))
             for extra in x_test.get("extra_cases") or []:
                 endpoints.append(Endpoint(**extra))
@@ -120,6 +143,10 @@ def _sample_body(op: dict, root: dict | None = None) -> dict[str, Any] | None:
     rb = op.get("requestBody", {})
     schema = rb.get("content", {}).get("application/json", {}).get("schema", {})
     if not schema:
+        body_parameters = [p for p in op.get("parameters", []) if p.get("in") == "body"]
+        if body_parameters:
+            schema = body_parameters[0].get("schema", {})
+    if not schema:
         return None
     return _sample_from_schema(_resolve_refs(schema, root or op))
 
@@ -148,4 +175,8 @@ def _sample_from_schema(schema: dict) -> Any:
 def _extract_required_fields(op: dict) -> list[str]:
     schema = op.get("requestBody", {}).get("content", {}).get(
         "application/json", {}).get("schema", {})
+    if not schema:
+        body_parameters = [p for p in op.get("parameters", []) if p.get("in") == "body"]
+        if body_parameters:
+            schema = body_parameters[0].get("schema", {})
     return list(schema.get("required") or [])

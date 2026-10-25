@@ -19,7 +19,7 @@ Approve ONLY if:
 """
 
 def review(diag: Diagnosis, fix: FixProposal, diff_text: str,
-           test_passed: bool | None, test_output: str) -> Verdict:
+           test_passed: bool | None, test_output: str, trace=None) -> Verdict:
     user = (
         f"## Diagnosis\n{diag.model_dump_json(indent=2)}\n\n"
         f"## Proposed fix (file: {fix.file_path}, risk: {fix.risk})\n"
@@ -30,4 +30,5 @@ def review(diag: Diagnosis, fix: FixProposal, diff_text: str,
     return chat_json(
         model=SETTINGS.workhorse_model, system=SYSTEM, user=user,
         schema=Verdict, num_ctx=SETTINGS.workhorse_num_ctx, temperature=0.1,
+        trace=trace, kind="reviewer",
     )

@@ -14,6 +14,7 @@ class Endpoint(BaseModel):
     expect_status: list[int] = Field(default_factory=lambda: [200])
     path_params: dict[str, Any] = Field(default_factory=dict)
     required_fields: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 class TestCase(BaseModel):
     name: str
@@ -32,6 +33,7 @@ class TestResult(BaseModel):
     response_body: Any | None = None
     error: str | None = None
     duration_ms: float = 0.0
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
 
 class Diagnosis(BaseModel):
     root_cause: str = Field(..., description="1-3 sentence explanation of the root cause")

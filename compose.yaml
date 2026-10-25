@@ -1,0 +1,21 @@
+services:
+  audit-db:
+    image: postgres:16-alpine
+    container_name: api-tester-audit-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: api_tester
+      POSTGRES_USER: api_tester
+      POSTGRES_PASSWORD: api_tester_local_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - api_tester_audit_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api_tester -d api_tester"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  api_tester_audit_data:

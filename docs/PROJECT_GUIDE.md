@@ -2,6 +2,63 @@
 
 This document is written for two audiences at once. If you are new to APIs, start with the beginner sections and follow the first-run walkthrough. If you already build backend systems, use the detailed sections on request generation, concurrency, OpenAPI interpretation, local LLM contracts, Git safety, CI, and extension points. The goal is that every important behavior is understandable without reading the source code first.
 
+## Table of contents
+
+- [1. What this project is](#1-what-this-project-is)
+- [2. What the project does not do](#2-what-the-project-does-not-do)
+- [3. Repository layout](#3-repository-layout)
+- [4. Requirements](#4-requirements)
+  - [4.1 Python](#41-python)
+  - [4.2 Python dependencies](#42-python-dependencies)
+  - [4.3 Ollama](#43-ollama)
+- [5. Installation](#5-installation)
+- [6. Configuration](#6-configuration)
+  - [Choosing SQLite or PostgreSQL](#choosing-sqlite-or-postgresql)
+- [7. Running the target API](#7-running-the-target-api)
+- [8. Endpoint specifications](#8-endpoint-specifications)
+  - [8.1 YAML format](#81-yaml-format)
+  - [8.2 OpenAPI JSON format](#82-openapi-json-format)
+- [9. Test generation and HTTP behavior](#9-test-generation-and-http-behavior)
+  - [Large specifications: filtering, batching, and resuming](#large-specifications-filtering-batching-and-resuming)
+- [10. The end-to-end pipeline](#10-the-end-to-end-pipeline)
+  - [10.1 Durable audit database](#101-durable-audit-database)
+  - [What is redacted and why](#what-is-redacted-and-why)
+  - [Auditing disabled](#auditing-disabled)
+- [11. CLI commands and options](#11-cli-commands-and-options)
+  - [11.1 `api-tester run`](#111-api-tester-run)
+  - [11.2 `api-tester smoke`](#112-api-tester-smoke)
+  - [11.3 `api-tester audit-export`](#113-api-tester-audit-export)
+- [12. LLM workflow and JSON guarantees](#12-llm-workflow-and-json-guarantees)
+  - [Analyzer](#analyzer)
+  - [Fixer](#fixer)
+  - [Reviewer](#reviewer)
+- [13. Git and safety behavior](#13-git-and-safety-behavior)
+- [14. Reports](#14-reports)
+- [15. File-by-file reference](#15-file-by-file-reference)
+- [16. Common operating procedures](#16-common-operating-procedures)
+- [17. Troubleshooting](#17-troubleshooting)
+- [18. Current limitations and maintenance notes](#18-current-limitations-and-maintenance-notes)
+- [19. Recommended development workflow](#19-recommended-development-workflow)
+- [20. Beginner concepts: the vocabulary you need](#20-beginner-concepts-the-vocabulary-you-need)
+- [21. First-run walkthrough for a complete beginner](#21-first-run-walkthrough-for-a-complete-beginner)
+  - [Step 1: enter the project](#step-1-enter-the-project)
+  - [Step 2: create and activate an isolated Python environment](#step-2-create-and-activate-an-isolated-python-environment)
+  - [Step 3: install the package and development tools](#step-3-install-the-package-and-development-tools)
+  - [Step 4: check the command exists](#step-4-check-the-command-exists)
+  - [Step 5: prepare Ollama](#step-5-prepare-ollama)
+  - [Step 6: start the target API](#step-6-start-the-target-api)
+  - [Step 7: run the example specification](#step-7-run-the-example-specification)
+  - [Step 8: read the report](#step-8-read-the-report)
+- [22. A concrete request lifecycle](#22-a-concrete-request-lifecycle)
+- [23. Designing good specifications](#23-designing-good-specifications)
+- [24. Concurrency, idempotency, and retries in depth](#24-concurrency-idempotency-and-retries-in-depth)
+- [25. Authentication behavior in depth](#25-authentication-behavior-in-depth)
+- [26. Understanding a failure report](#26-understanding-a-failure-report)
+- [27. CI usage](#27-ci-usage)
+- [28. Developer workflow for changing this project](#28-developer-workflow-for-changing-this-project)
+- [29. Verification checklist before calling a release stable](#29-verification-checklist-before-calling-a-release-stable)
+- [30. Glossary of implementation terms](#30-glossary-of-implementation-terms)
+
 ## 1. What this project is
 
 API Tester is a contract-testing and assisted-repair tool for HTTP APIs. Its basic job is:
@@ -50,6 +107,7 @@ The project is deliberately local-model oriented. It uses the Ollama Python clie
 ├── examples/
 │   ├── endpoints.yaml          Hand-authored endpoint specification
 │   └── openapi.json             OpenAPI 3 sample specification
+├── compose.yaml                 Optional PostgreSQL audit database
 ├── reports/                    Generated reports; ignored by Git
 ├── Modelfile.qwen14            Ollama workhorse model definition
 ├── Modelfile.r1                Ollama analyzer model definition
@@ -80,6 +138,9 @@ The declared runtime dependencies are:
 | `pyyaml` | YAML endpoint specifications |
 | `ollama` | Calls to the local Ollama service |
 | `python-dotenv` | Loads `.env` before settings are created |
+| `sqlalchemy[asyncio]` | Database models and asynchronous persistence |
+| `aiosqlite` | Default local SQLite database driver |
+| `asyncpg` | PostgreSQL driver for Docker/deployment |
 
 ### 4.3 Ollama
 
@@ -113,6 +174,8 @@ python -m pip install -e '.[dev]'
 ```
 
 The editable install exposes the console command `api-tester`, which is wired by `pyproject.toml` to `api_tester.cli:app`.
+
+The first audited run creates `api_tester.db` automatically when the default SQLite URL is used. That file is ignored by Git. No separate migration command is required for a new local database; SQLAlchemy creates the tables on startup.
 
 Useful checks:
 
@@ -157,11 +220,57 @@ Supported variables:
 | `HTTP_TIMEOUT` | `15.0` | Timeout for initial HTTP requests, in seconds |
 | `HTTP_RETRIES` | `1` | Retries for failed idempotent requests |
 | `CONCURRENCY` | `4` | Maximum concurrent read-only requests |
+| `BATCH_SIZE` | `100` | Number of discovered endpoints in one resumable execution batch |
 | `VERIFY_PORT_OFFSET` | `1000` | Added to the original port for post-fix verification |
 | `VERIFY_STARTUP_TIMEOUT` | `20.0` | How long to wait for the patched service to answer `/health` |
 | `VERIFY_TIMEOUT` | `30.0` | Timeout for the post-fix request |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./api_tester.db` | Audit database connection string |
+| `AUDIT_ENABLED` | `true` | Enable durable audit persistence |
+| `AUDIT_MAX_CHARS` | `200000` | Maximum stored length for one text payload after redaction |
 
 Values are parsed with `int()` or `float()`. Invalid values cause an import-time error, so keep numeric variables numeric.
+
+### Choosing SQLite or PostgreSQL
+
+SQLite is the easiest option for one developer and one process:
+
+```dotenv
+DATABASE_URL=sqlite+aiosqlite:///./api_tester.db
+```
+
+For a Dockerized PostgreSQL database:
+
+```bash
+docker compose up -d audit-db
+```
+
+Use this connection string in `.env`:
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://api_tester:api_tester_local_password@localhost:5432/api_tester
+```
+
+Check the database container:
+
+```bash
+docker compose ps
+docker compose logs audit-db
+```
+
+Stop the container without deleting its data:
+
+```bash
+docker compose stop audit-db
+```
+
+Remove the container and its persistent volume only when you intentionally want to erase local audit history:
+
+```bash
+docker compose down
+docker compose down -v
+```
+
+The second command is destructive for the local PostgreSQL volume. Export important runs first.
 
 ## 7. Running the target API
 
@@ -219,7 +328,7 @@ Fields:
 
 ### 8.2 OpenAPI JSON format
 
-The loader reads `paths`, supports only `get`, `post`, `put`, `patch`, and `delete`, and creates one `Endpoint` for each supported operation. It extracts every 2xx response code as a happy-path success code.
+The loader reads `paths`, supports only `get`, `post`, `put`, `patch`, and `delete`, and creates one `Endpoint` for each supported operation. It extracts every 2xx response code as a happy-path success code. OpenAPI 3 JSON and the common Swagger 2.0 JSON shape are accepted because both describe operations under `paths`; Swagger 2 body parameters are converted into the same normalized request-body representation.
 
 For JSON request bodies, it recursively creates a sample from basic schema types. Examples, defaults, and the first enum value are preferred when present:
 
@@ -255,6 +364,35 @@ OpenAPI operations can add project-specific cases through `x-test`:
 
 An `extra_cases` item is passed directly to `Endpoint(**extra)`, so it must use `Endpoint` field names. For an OpenAPI path such as `/users/{id}`, provide an example, default, or `x-test.path_params`; otherwise loading stops with a missing-parameter error rather than sending a misleading request to `/users/1`.
 
+Swagger 2.0 body example:
+
+```json
+{
+  "swagger": "2.0",
+  "paths": {
+    "/users": {
+      "post": {
+        "parameters": [
+          {
+            "name": "user",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {"name": {"type": "string", "example": "Ada"}},
+              "required": ["name"]
+            }
+          }
+        ],
+        "responses": {"201": {"description": "Created"}}
+      }
+    }
+  }
+}
+```
+
+The redacted Swagger/OpenAPI document is stored in `audit_runs.raw_spec`, and its SHA-256 digest is calculated from the original input and stored in `audit_runs.spec_sha256`. This lets an auditor prove which specification version produced a run without requiring the database to retain credentials embedded in the document.
+
 ## 9. Test generation and HTTP behavior
 
 For every endpoint, `runner.py` generates a happy-path case. It then adds cases according to the method:
@@ -269,7 +407,35 @@ For every endpoint, `runner.py` generates a happy-path case. It then adds cases 
 
 The path substitution algorithm first replaces configured `{name}` and `:name` values. YAML specifications with unresolved placeholders use the runner fallback value `1`; OpenAPI path parameters are validated during discovery and should normally be resolved before reaching the runner. Path values are not URL-encoded automatically, so values containing `/`, spaces, or reserved characters should be encoded by the specification author.
 
-Read-only requests are executed concurrently with an `asyncio.Semaphore`; the default concurrency is 4. Mutating requests are serialized to avoid test interference. `GET` and `DELETE` send headers and query parameters. `POST`, `PUT`, and `PATCH` send JSON except for the malformed-JSON case, which sends raw invalid bytes and forces `Content-Type: application/json`. Failed idempotent requests can be retried using `HTTP_RETRIES` or the CLI `--retries` option.
+Read-only requests are executed concurrently with bounded workers; the default concurrency is 4. Mutating requests are serialized to avoid test interference. `GET` and `DELETE` send headers and query parameters. `POST`, `PUT`, and `PATCH` send JSON except for the malformed-JSON case, which sends raw invalid bytes and forces `Content-Type: application/json`. Failed idempotent requests can be retried using `HTTP_RETRIES` or the CLI `--retries` option.
+
+### Large specifications: filtering, batching, and resuming
+
+The complete specification is parsed once, but the runner never submits every route as one giant task set. Endpoints are divided into batches (100 by default), and each batch has a bounded request worker pool. This limits memory use, keeps progress visible, and prevents a huge API from overwhelming the target service.
+
+Use filters before batching when you want to test only part of a contract:
+
+```bash
+api-tester run -s openapi.yaml -u http://localhost:8000 \
+  --include-prefix /v1/admin \
+  --exclude-prefix /v1/admin/internal \
+  --methods GET,POST \
+  --tags users,accounts \
+  --batch-size 50
+```
+
+`--include-prefix` keeps matching paths, `--exclude-prefix` removes matching paths, `--methods` is a comma-separated case-insensitive method allow-list, and `--tags` keeps OpenAPI/Swagger operations having at least one selected tag. Filters are applied during discovery, so excluded routes do not create audit endpoint or test-case rows.
+
+Every audited batch has a number, source index, endpoint count, status, result count, and failure count. If a process stops after a completed batch, continue it with the printed run UUID:
+
+```bash
+api-tester run -s openapi.yaml -u http://localhost:8000 \
+  --batch-size 50 --stop-after-failures 10
+api-tester run -s openapi.yaml -u http://localhost:8000 \
+  --batch-size 50 --resume RUN_UUID
+```
+
+Resume is intentionally audit-backed. The specification must still have the same SHA-256 hash; otherwise the command stops rather than silently mixing results from different contracts. Completed batches are skipped, while incomplete batches are executed again. Keep the same filters and batch size when resuming so batch numbers refer to the same endpoint ordering. `--stop-after-failures` is useful for staged or incident-focused runs and counts failures across the current invocation.
 
 Each result records the request case, pass/fail state, status if a response arrived, a parsed JSON body or up to 2,000 characters of text, an error string, and elapsed milliseconds. A network exception becomes a failed result rather than stopping the complete run. Only transport and timeout failures are retried, and only when the case is marked idempotent.
 
@@ -315,7 +481,76 @@ run_all ─────────► TestResult objects
 
 The CLI always writes a report after `run_pipeline()` returns, including when the fix phase is skipped or a particular failure cannot be diagnosed. By default, it then exits with status `1` if any tests failed, which makes it suitable for CI. Use `--allow-failures` when you want a report without a failing process status.
 
+When auditing is enabled, the CLI also prints an `Audit run:` UUID. Keep that UUID with the Markdown report; it is the primary key for retrieving every database record belonging to that run.
+
+## 10.1 Durable audit database
+
+The Markdown report is a summary for people. The database is the detailed audit trail for machines, investigations, and historical comparisons. A run is created before HTTP execution and receives a UUID. Every later row carries that UUID directly or through its case ID.
+
+The database contains these logical records:
+
+| Table | What it records |
+|---|---|
+| `audit_runs` | Base URL, specification path and redacted raw snapshot, exact specification hash, effective configuration and invocation options, start/end state, and totals. |
+| `audit_endpoints` | Every normalized endpoint loaded from YAML, OpenAPI, or Swagger. |
+| `audit_batches` | Resumable execution units: batch number, endpoint range, status, result count, and failure count. |
+| `audit_cases` | Every generated concrete case, including happy, auth, empty-body, and malformed-JSON cases. |
+| `audit_attempts` | Every HTTP attempt, including retries, request data, response data, status, error, and duration. |
+| `audit_diagnoses` | Analyzer model output for a failed case. |
+| `audit_source_context` | Source files shown to the analyzer, redacted content, and original-content hash. |
+| `audit_llm_interactions` | Model name, role (`analyzer`, `fixer`, or `reviewer`), prompts, responses, validation errors, attempts, and latency. |
+| `audit_fix_proposals` | Proposed file path, redacted full content, content hash, explanation, risk, and computed diff. |
+| `audit_reviews` | Reviewer approval, reasoning, and concerns. |
+| `audit_verifications` | Post-fix status and verification output. |
+| `audit_events` | Append-style lifecycle events such as run start, test completion, diagnosis completion, fix proposal, and run finish. |
+
+The relationships are:
+
+```text
+audit_runs
+├── audit_endpoints
+├── audit_batches
+├── audit_cases
+│   ├── audit_attempts
+│   ├── audit_diagnoses
+│   ├── audit_source_context
+│   ├── audit_fix_proposals
+│   ├── audit_reviews
+│   └── audit_verifications
+├── audit_llm_interactions
+└── audit_events
+```
+
+The implementation uses SQLAlchemy async sessions. SQLite and PostgreSQL use the same models and persistence methods, so changing `DATABASE_URL` does not change what is recorded. Tables are created automatically on startup for this initial version. For a production deployment, add versioned migrations before changing table definitions in place.
+
+### What is redacted and why
+
+Audit is designed to preserve evidence without becoming a credential store. Before persistence, it redacts common authorization, bearer, API-key, secret, password, token, and private-key patterns. Large text fields are bounded by `AUDIT_MAX_CHARS`. The fix and source records retain SHA-256 hashes so you can detect which exact content was involved without necessarily storing the complete unredacted secret-bearing text.
+
+The redaction is pattern-based, not magic. Do not point `--source` at a broad home directory or a production checkout containing unrelated secrets. Use a narrow source root and a test environment.
+
+### Auditing disabled
+
+Use this only when database persistence is unavailable or intentionally out of scope:
+
+```bash
+api-tester run ... --no-audit
+```
+
+With auditing disabled, the normal Markdown report and HTTP pipeline still work, but no run UUID, database rows, LLM audit entries, or durable lifecycle records are created.
+
 ## 11. CLI commands and options
+
+The installed command is named `api-tester`. Every command accepts `--help`; this prints the options for that command without running a test:
+
+```bash
+api-tester --help
+api-tester run --help
+api-tester smoke --help
+api-tester audit-export --help
+```
+
+The short forms `-s` and `-u` are aliases for `--spec` and `--base-url`. Boolean options do not take `true` or `false` after them: write `--auth` to enable authentication cases, `--no-audit` to disable auditing, or `--allow-failures` to change the exit-code policy. A path such as `SPEC`, `PATH`, or `URL` in an example is a placeholder that must be replaced with a real value.
 
 ### 11.1 `api-tester run`
 
@@ -328,17 +563,30 @@ api-tester run \
 
 Options:
 
-- `--spec`, `-s`: required existing YAML, YML, or JSON specification path.
-- `--base-url`, `-u`: required target API base URL.
-- `--source`: optional source directory used for LLM context and fixes.
-- `--auth`: add missing-authorization negative cases.
-- `--fix`: enable proposal, worktree, review, and commit stages.
-- `--auto-approve`: skip the interactive `Commit to branch? [y/N]` prompt after the reviewer approves. It does not bypass the reviewer.
-- `--fail-on-test-failure/--allow-failures`: control the process exit code. Failure mode is the default; `--allow-failures` is useful when collecting reports without failing a CI step.
-- `--start-cmd`: command used to start the patched API inside the worktree. Enables real post-fix verification.
-- `--report-dir`: output directory, default `reports`.
-- `--concurrency`: maximum number of concurrent read-only requests. It must be at least 1. If omitted, the `CONCURRENCY` environment setting is used.
-- `--retries`: number of retries for idempotent transport/timeout failures. It must be zero or greater. If omitted, `HTTP_RETRIES` is used.
+| Option | Required/default | Meaning and accepted value |
+|---|---|---|
+| `--spec`, `-s` | Required | Existing `.yaml`, `.yml`, or `.json` endpoint/OpenAPI/Swagger file. Typer checks that the path exists. |
+| `--base-url`, `-u` | Required | API origin, such as `http://localhost:8000`. Endpoint paths are appended to this URL. Do not include an endpoint path here. |
+| `--source` | Omitted | Source directory used for analyzer context. It is needed for `--fix`; if omitted, the fix stage is skipped. When supplied for fixes, it must be inside a Git repository. |
+| `--auth` | Disabled | Adds missing-authorization negative cases. It does not create credentials or log in. |
+| `--fix` | Disabled | Enables diagnosis, fix proposal, isolated worktree, review, optional verification, and commit stages. Without it, failures are reported only. |
+| `--auto-approve` | Disabled | Removes the human commit prompt after reviewer approval. It never bypasses the reviewer and should be used carefully in CI. |
+| `--fail-on-test-failure` / `--allow-failures` | Fail by default | Controls the process exit code. Both write a report; the first returns `1` when cases fail, while the second returns `0` for report-collection jobs. |
+| `--start-cmd` | Omitted | Shell command used to start the patched API in a temporary worktree. Enables post-fix verification; the process receives `PORT` and `HOST`. Quote commands containing spaces. |
+| `--report-dir` | `reports` | Directory where the Markdown report is written. It is created if necessary. |
+| `--concurrency` | `CONCURRENCY` (`4`) | Positive integer for concurrent read-only request workers. Mutating requests are still serialized. |
+| `--retries` | `HTTP_RETRIES` (`1`) | Non-negative integer. Retries only idempotent cases after timeout/transport failures, not ordinary HTTP error statuses. |
+| `--batch-size` | `BATCH_SIZE` (`100`) | Positive number of discovered endpoints per audit/resume batch. Smaller values reduce restart cost and memory pressure. |
+| `--include-prefix` | Omitted | Keeps only paths beginning with the supplied string, such as `/v1/users`. |
+| `--exclude-prefix` | Omitted | Removes paths beginning with the supplied string, such as `/internal`. |
+| `--methods` | Omitted | Comma-separated allow-list, case-insensitive: `GET,POST,PATCH`. Empty means all supported methods. |
+| `--tags` | Omitted | Comma-separated OpenAPI/Swagger tag allow-list. An operation is kept when it has at least one selected tag. |
+| `--stop-after-failures` | Omitted | Positive integer. Stops after that many failed generated cases, leaving completed batches available for `--resume`. |
+| `--resume` | Omitted | Existing audit-run UUID. Requires auditing, the same specification bytes/hash, base URL, route filters, and batch-size choice. Completed batches are skipped. |
+| `--database-url` | `DATABASE_URL` | SQLAlchemy async connection URL, for example `sqlite+aiosqlite:///./api_tester.db` or the PostgreSQL URL shown earlier. |
+| `--audit` / `--no-audit` | Audit enabled | Turns durable database recording on or off for this invocation. `--resume` cannot be used with `--no-audit`. |
+
+Numeric options reject invalid values before execution: `--concurrency`, `--batch-size`, and `--stop-after-failures` must be at least 1; `--retries` may be 0 or greater. Options that are omitted inherit their environment-backed defaults where documented above.
 
 Safe diagnosis-only run:
 
@@ -395,6 +643,37 @@ api-tester smoke
 ```
 
 This calls `ollama.show()` for both configured model names and exits with status 1 if either model is unavailable.
+
+`smoke` has no project-specific options. It reads `ANALYZER_MODEL` and `WORKHORSE_MODEL` from `.env`/the environment, so change those variables when using different Ollama model names. It does not contact the target API, inspect a specification, or run a test case.
+
+### 11.3 `api-tester audit-export`
+
+Export every stored row for one run into one JSON document:
+
+```bash
+api-tester audit-export \
+  --run-id 7b2c1b6f-2d22-4e6f-9f59-3f9f1f16b9c0 \
+  --output audit-7b2c1b6f.json
+```
+
+The command reads the database configured by `DATABASE_URL`. To export from another database:
+
+```bash
+api-tester audit-export \
+  --database-url postgresql+asyncpg://api_tester:api_tester_local_password@localhost:5432/api_tester \
+  --run-id RUN_ID \
+  --output audit.json
+```
+
+The export contains named arrays for runs, endpoints, cases, attempts, diagnoses, source context, LLM interactions, fix proposals, reviews, verifications, and lifecycle events. Stored text is redacted and bounded; hashes remain available to identify the original content without storing an unbounded secret.
+
+Options:
+
+- `--run-id`: required UUID printed by `api-tester run` when auditing is enabled.
+- `--output`, `-o`: destination JSON file; defaults to `audit-export.json`. Parent directories should already exist.
+- `--database-url`: optional database override. If omitted, `DATABASE_URL` is used.
+
+The export command is read-only with respect to audit records. It creates or checks the database schema while opening the connection, but it does not alter the selected run.
 
 ## 12. LLM workflow and JSON guarantees
 
@@ -508,6 +787,10 @@ These models are the contracts between pipeline stages. Pydantic rejects missing
 
 Loads `.env`, defines the frozen `Settings` dataclass, parses all environment values, and creates the process-wide `SETTINGS` instance.
 
+### `api_tester/audit.py`
+
+Defines the SQLAlchemy tables and persistence service. `AuditStore.open()` creates an asynchronous database engine and initializes the tables. `start_run()` stores the raw specification, its hash, normalized endpoints, configuration, and a run-start event. `record_results()` stores every generated case and every HTTP attempt, including retries. Other methods store diagnoses, source context, LLM interactions, fixes, reviews, verification, lifecycle events, final status, and complete JSON export. `AuditBridge` schedules database writes safely when synchronous LLM code is running inside worker threads.
+
 ### `api_tester/discover.py`
 
 `load_endpoints()` selects YAML or OpenAPI JSON based on the file extension. `_from_yaml()` creates `Endpoint` objects from `data["endpoints"]`. `_from_openapi()` maps supported OpenAPI operations and optional `x-test.extra_cases`. The remaining helpers extract success codes, generate sample JSON bodies, and collect required request-body fields.
@@ -516,7 +799,7 @@ OpenAPI discovery also extracts required path, query, and header parameters, res
 
 ### `api_tester/runner.py`
 
-`_substitute_path()` resolves path parameters. `_generate_cases()` builds happy, missing-auth, empty-body, and invalid-JSON cases and carries query parameters and idempotency metadata into each `TestCase`. `_execute()` sends one request, parses its response, retries only idempotent transport/timeout failures, and converts errors into failed results. `run_all()` creates one async HTTP client, runs read-only cases with bounded concurrency, serializes mutation cases, gathers all cases, and returns results in task order.
+`_substitute_path()` resolves path parameters. `_generate_cases()` builds happy, missing-auth, empty-body, and invalid-JSON cases and carries query parameters and idempotency metadata into each `TestCase`. `_execute()` sends one request, records an attempt object, parses its response, retries only idempotent transport/timeout failures, and converts errors into failed results. `run_all()` creates one async HTTP client, runs read-only cases with bounded concurrency, serializes mutation cases, gathers all cases, and returns results in task order. `TestResult.attempts` preserves retry history for the audit database.
 
 ### `api_tester/analyzer.py`
 

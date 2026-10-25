@@ -57,8 +57,15 @@ def _generate_cases(ep: Endpoint, auth_used: bool) -> list[TestCase]:
         ))
     return cases
 
-async def _execute(client: httpx.AsyncClient, case: TestCase, retries: int = 0) -> TestResult:
+async def _execute(
+    client: httpx.AsyncClient,
+    case: TestCase,
+    retries: int = 0,
+    attempt_no: int = 1,
+    attempt_log: list[dict[str, Any]] | None = None,
+) -> TestResult:
     started = time.perf_counter()
+    attempt_log = attempt_log if attempt_log is not None else []
     try:
         kwargs: dict[str, Any] = {"headers": case.request_headers}
         if case.method.upper() in ("POST", "PUT", "PATCH"):
@@ -75,34 +82,73 @@ async def _execute(client: httpx.AsyncClient, case: TestCase, retries: int = 0) 
         except ValueError:
             body = r.text[:2000]
         error = None if passed else f"expected {case.expected_status}, got {r.status_code}"
+        attempt_log.append({
+            "attempt_no": attempt_no, "passed": passed, "actual_status": r.status_code,
+            "response_body": body, "error": error, "duration_ms": duration,
+        })
         return TestResult(case=case, passed=passed, actual_status=r.status_code,
-                          response_body=body, error=error, duration_ms=duration)
+                          response_body=body, error=error, duration_ms=duration,
+                          attempts=attempt_log)
     except (httpx.TimeoutException, httpx.TransportError) as e:
+        duration = (time.perf_counter() - started) * 1000
+        attempt_log.append({
+            "attempt_no": attempt_no, "passed": False, "actual_status": None,
+            "response_body": None, "error": f"{type(e).__name__}: {e}",
+            "duration_ms": duration,
+        })
         if retries > 0 and case.idempotent:
             await asyncio.sleep(0.2 * (2 ** (retries - 1)))
-            return await _execute(client, case, retries - 1)
+            return await _execute(client, case, retries - 1, attempt_no + 1, attempt_log)
         return TestResult(case=case, passed=False,
                           error=f"{type(e).__name__}: {e}",
-                          duration_ms=(time.perf_counter() - started) * 1000)
+                          duration_ms=duration, attempts=attempt_log)
     except Exception as e:
+        duration = (time.perf_counter() - started) * 1000
+        attempt_log.append({
+            "attempt_no": attempt_no, "passed": False, "actual_status": None,
+            "response_body": None, "error": f"{type(e).__name__}: {e}",
+            "duration_ms": duration,
+        })
         return TestResult(case=case, passed=False,
                           error=f"{type(e).__name__}: {e}",
-                          duration_ms=(time.perf_counter() - started) * 1000)
+                          duration_ms=duration, attempts=attempt_log)
 
 async def run_all(endpoints: list[Endpoint], base_url: str, auth_used: bool,
                   timeout: float = 15.0, concurrency: int = 4,
                   retries: int = 0) -> list[TestResult]:
-    sem = asyncio.Semaphore(concurrency)
+    if concurrency <= 0:
+        raise ValueError("concurrency must be positive")
     async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
-        async def bounded(case: TestCase) -> TestResult:
-            async with sem:
-                return await _execute(client, case)
         cases = [c for ep in endpoints for c in _generate_cases(ep, auth_used)]
+        queue: asyncio.Queue[tuple[int, TestCase] | None] = asyncio.Queue()
+        results: list[TestResult | None] = [None] * len(cases)
+
         async def run_case(case: TestCase) -> TestResult:
-            if case.idempotent:
-                return await bounded(case)
-            async with mutation_lock:
-                return await _execute(client, case, retries=0)
+            return await _execute(client, case, retries if case.idempotent else 0)
+
         mutation_lock = asyncio.Lock()
-        tasks = [run_case(c) for c in cases]
-        return list(await asyncio.gather(*tasks))
+
+        async def worker() -> None:
+            while True:
+                item = await queue.get()
+                try:
+                    if item is None:
+                        return
+                    index, case = item
+                    if case.idempotent:
+                        results[index] = await run_case(case)
+                    else:
+                        async with mutation_lock:
+                            results[index] = await run_case(case)
+                finally:
+                    queue.task_done()
+
+        worker_count = min(concurrency, max(1, len(cases)))
+        workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        for index, case in enumerate(cases):
+            await queue.put((index, case))
+        await queue.join()
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
+        return [result for result in results if result is not None]

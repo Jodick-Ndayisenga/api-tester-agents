@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TypeVar
+import time
+from typing import Callable, TypeVar
 
 import ollama
 from pydantic import BaseModel
@@ -34,7 +35,9 @@ def _content(resp) -> str:
 
 def chat_json(model: str, system: str, user: str, schema: type[T],
               num_ctx: int = 4096, temperature: float = 0.15,
-              max_retries: int = 2) -> T:
+              max_retries: int = 2,
+              trace: Callable[[dict], None] | None = None,
+              kind: str = "json") -> T:
     messages = [
         {"role": "system", "content": system + "\n\nReturn ONLY valid JSON matching this schema:\n"
                                              + json.dumps(schema.model_json_schema(), indent=2)},
@@ -42,7 +45,8 @@ def chat_json(model: str, system: str, user: str, schema: type[T],
     ]
     last_err: str | None = None
     last_raw: str = ""
-    for _ in range(max_retries + 1):
+    for attempt_no in range(1, max_retries + 2):
+        started = time.perf_counter()
         if last_err is not None:
             messages.append({"role": "assistant", "content": last_raw})
             messages.append({"role": "user",
@@ -52,15 +56,40 @@ def chat_json(model: str, system: str, user: str, schema: type[T],
                            options={"num_ctx": num_ctx, "temperature": temperature})
         last_raw = _content(resp)
         try:
-            return schema.model_validate_json(_extract_json(last_raw))
+            parsed = schema.model_validate_json(_extract_json(last_raw))
+            if trace:
+                trace({
+                    "kind": kind, "model": model, "attempt_no": attempt_no,
+                    "schema_name": schema.__name__, "system": messages[0]["content"],
+                    "user": messages[-1]["content"], "response": last_raw,
+                    "duration_ms": (time.perf_counter() - started) * 1000,
+                })
+            return parsed
         except Exception as e:
             last_err = str(e)
+            if trace:
+                trace({
+                    "kind": kind, "model": model, "attempt_no": attempt_no,
+                    "schema_name": schema.__name__, "system": messages[0]["content"],
+                    "user": messages[-1]["content"], "response": last_raw,
+                    "error": last_err, "duration_ms": (time.perf_counter() - started) * 1000,
+                })
     raise ValueError(f"LLM failed to return valid {schema.__name__}: {last_err}")
 
 def chat_text(model: str, system: str, user: str,
-              num_ctx: int = 4096, temperature: float = 0.15) -> str:
+              num_ctx: int = 4096, temperature: float = 0.15,
+              trace: Callable[[dict], None] | None = None,
+              kind: str = "text") -> str:
+    started = time.perf_counter()
     resp = ollama.chat(model=model,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}],
         options={"num_ctx": num_ctx, "temperature": temperature})
-    return _strip_thinking(_content(resp))
+    content = _content(resp)
+    if trace:
+        trace({
+            "kind": kind, "model": model, "attempt_no": 1,
+            "system": system, "user": user, "response": content,
+            "duration_ms": (time.perf_counter() - started) * 1000,
+        })
+    return _strip_thinking(content)

@@ -65,3 +65,22 @@ def test_openapi_resolves_refs_and_parameters(tmp_path):
     assert post.body == {"name": "Ada"}
     assert post.required_fields == ["name"]
 
+
+def test_openapi_filters_by_prefix_method_and_tag(tmp_path):
+    spec = {
+        "openapi": "3.0.0",
+        "paths": {
+            "/users": {"get": {"tags": ["users"], "responses": {"200": {}}}},
+            "/users/internal": {"post": {"tags": ["users"], "responses": {"201": {}}}},
+            "/orders": {"get": {"tags": ["orders"], "responses": {"200": {}}}},
+        },
+    }
+    path = tmp_path / "openapi.json"
+    path.write_text(json.dumps(spec))
+
+    endpoints = load_endpoints(
+        path, include_prefix="/users", exclude_prefix="/users/internal",
+        methods={"get"}, tags={"users"},
+    )
+    assert [(endpoint.method, endpoint.path) for endpoint in endpoints] == [("GET", "/users")]
+

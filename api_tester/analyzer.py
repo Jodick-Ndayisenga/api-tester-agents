@@ -105,22 +105,27 @@ def _normalize_suspected(returned: list[str], source_dir: Path, files: list[Path
             out.append(by_name[s])
     return out
 
-def analyze(result: TestResult, source_dir: Path | None) -> Diagnosis:
+def analyze(result: TestResult, source_dir: Path | None,
+            trace=None, source_trace=None) -> Diagnosis:
     source_text, files = _gather_source(result.case.path, source_dir)
     header = ""
     if source_dir and files:
         header = f"## Source root\n{source_dir}\n\n"
     user = header + "## Failure\n" + _format_failure(result) + \
            "\n\n## Source files\n" + (source_text or "(none provided)")
+    if source_trace and files:
+        assert source_dir is not None
+        source_trace([{"path": str(f.relative_to(source_dir)), "content": f.read_text(errors="ignore")} for f in files])
     user = _redact_secrets(user)
     diag = chat_json(model=SETTINGS.analyzer_model, system=SYSTEM, user=user,
-                     schema=Diagnosis, num_ctx=SETTINGS.analyzer_num_ctx, temperature=0.3)
+                     schema=Diagnosis, num_ctx=SETTINGS.analyzer_num_ctx, temperature=0.3,
+                     trace=trace, kind="analyzer")
     if files and source_dir:
         diag.suspected_files = _normalize_suspected(diag.suspected_files, source_dir, files)
     return diag
 
 _SECRET_PATTERNS = [
-    (re.compile(r"(?i)(authorization\s*[:=]\s*)([^\s,;]+)"), r"\1***"),
+    (re.compile(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+"), r"\1***"),
     (re.compile(r"(?i)(bearer\s+)[^\s,;]+"), r"\1***"),
     (re.compile(r"(?i)(api[_-]?key|secret|password|token)(\s*[:=]\s*)['\"]?[^'\"\s,;]+"), r"\1\2***"),
     (re.compile(r"-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----", re.DOTALL), "[PRIVATE KEY REDACTED]"),

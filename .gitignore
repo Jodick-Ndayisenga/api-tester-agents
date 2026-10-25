@@ -50,6 +50,9 @@ pytestdebug.log
 # API Tester generated/runtime data
 reports/
 .worktrees/
+*.db
+*.sqlite
+*.sqlite3
 *.log
 
 # IDE/editor files

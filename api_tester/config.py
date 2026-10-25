@@ -20,9 +20,13 @@ class Settings:
     http_timeout: float = float(os.getenv("HTTP_TIMEOUT", "15.0"))
     http_retries: int = int(os.getenv("HTTP_RETRIES", "1"))
     concurrency: int = int(os.getenv("CONCURRENCY", "4"))
+    batch_size: int = int(os.getenv("BATCH_SIZE", "100"))
     verify_port_offset: int = int(os.getenv("VERIFY_PORT_OFFSET", "1000"))
     verify_startup_timeout: float = float(os.getenv("VERIFY_STARTUP_TIMEOUT", "20.0"))
     verify_timeout: float = float(os.getenv("VERIFY_TIMEOUT", "30.0"))
+    database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./api_tester.db")
+    audit_enabled: bool = os.getenv("AUDIT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    audit_max_chars: int = int(os.getenv("AUDIT_MAX_CHARS", "200000"))
 
     def __post_init__(self) -> None:
         positive = {
@@ -34,8 +38,10 @@ class Settings:
             "max_fix_attempts": self.max_fix_attempts,
             "http_timeout": self.http_timeout,
             "concurrency": self.concurrency,
+            "batch_size": self.batch_size,
             "verify_startup_timeout": self.verify_startup_timeout,
             "verify_timeout": self.verify_timeout,
+            "audit_max_chars": self.audit_max_chars,
         }
         invalid = [name for name, value in positive.items() if value <= 0]
         if self.http_retries < 0:
