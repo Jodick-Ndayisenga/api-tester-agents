@@ -3,6 +3,7 @@
 API Tester is a Python command-line tool that turns an endpoint specification into HTTP contract tests. When a test fails, it can use local Ollama models to diagnose the failure, propose a source-code fix, review that fix, verify it in an isolated Git worktree, and commit an approved change to a separate branch.
 
 The complete, file-by-file documentation is in [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md).
+The copy-and-paste database and fixture API runbook is in [docs/TEST_API_COMMANDS.md](docs/TEST_API_COMMANDS.md).
 
 ## Quick start
 

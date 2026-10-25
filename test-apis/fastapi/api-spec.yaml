@@ -1,0 +1,52 @@
+endpoints:
+  - method: GET
+    path: /health
+    expect_status: [200]
+    tags: [system]
+  - method: GET
+    path: /api/v1/users
+    query: {limit: 2}
+    expect_status: [200]
+    tags: [users]
+  - method: GET
+    path: /api/v1/users/{id}
+    path_params: {id: 1}
+    expect_status: [200, 404]
+    tags: [users]
+  - method: POST
+    path: /api/v1/users
+    body: {name: "Test User", email: "test@example.com"}
+    required_fields: [name, email]
+    expect_status: [201, 422]
+    tags: [users]
+  - method: PUT
+    path: /api/v1/users/{id}
+    path_params: {id: 1}
+    body: {name: "Updated User", email: "updated@example.com"}
+    required_fields: [name, email]
+    expect_status: [200, 404, 422]
+    tags: [users]
+  - method: DELETE
+    path: /api/v1/users/{id}
+    path_params: {id: 9999}
+    expect_status: [404]
+    tags: [users]
+  - method: GET
+    path: /api/v1/search
+    query: {q: Ada}
+    expect_status: [200]
+    tags: [search]
+  - method: GET
+    path: /api/v1/admin/secret
+    headers: {Authorization: "Bearer test-token"}
+    expect_status: [200]
+    tags: [admin]
+  - method: GET
+    path: /api/v1/buggy
+    expect_status: [200]
+    tags: [diagnostics]
+  - method: GET
+    path: /api/v1/slow
+    query: {delay_ms: 10}
+    expect_status: [200]
+    tags: [diagnostics]

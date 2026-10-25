@@ -59,6 +59,8 @@ This document is written for two audiences at once. If you are new to APIs, star
 - [28. Developer workflow for changing this project](#28-developer-workflow-for-changing-this-project)
 - [29. Verification checklist before calling a release stable](#29-verification-checklist-before-calling-a-release-stable)
 - [30. Glossary of implementation terms](#30-glossary-of-implementation-terms)
+- [31. Test API fixture projects](#31-test-api-fixture-projects)
+- [Test API command runbook](#test-api-command-runbook)
 
 ## 1. What this project is
 
@@ -109,6 +111,10 @@ The project is deliberately local-model oriented. It uses the Ollama Python clie
 ├── examples/
 │   ├── endpoints.yaml          Hand-authored endpoint specification
 │   └── openapi.json             OpenAPI 3 sample specification
+├── test-apis/                  Runnable target APIs for integration testing
+│   ├── fastapi/                 Python FastAPI fixture, port 8001
+│   ├── node/                    Plain Node.js fixture, port 8002
+│   └── nestjs/                  NestJS TypeScript fixture, port 8003
 ├── compose.yaml                 Optional PostgreSQL audit database
 ├── reports/                    Generated reports; ignored by Git
 ├── Modelfile.qwen14            Ollama workhorse model definition
@@ -1406,3 +1412,118 @@ Use a disposable Git repository for worktree tests. Never experiment with destru
 | `PatchRejected` | Safety exception that prevents a proposed change from progressing. |
 
 When debugging, follow the data in this order: `Endpoint` → `TestCase` → `TestResult` → `FailureReport` → `Diagnosis` → `FixProposal` → `Verdict` → optional Git commit.
+
+## 31. Test API fixture projects
+
+The `test-apis/` directory contains three independent target applications for
+learning and repeatable integration tests. They are deliberately small and
+use in-memory data, so restarting any one of them resets its users.
+
+### FastAPI fixture
+
+Location: `test-apis/fastapi`
+
+```bash
+cd test-apis/fastapi
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+```
+
+In another terminal from the repository root:
+
+```bash
+api-tester run \
+  --spec test-apis/fastapi/api-spec.yaml \
+  --base-url http://localhost:8001
+```
+
+FastAPI also provides generated documentation at `http://localhost:8001/docs`
+and `http://localhost:8001/redoc`.
+
+### Plain Node.js fixture
+
+Location: `test-apis/node`. It uses only Node's built-in `http` module.
+
+```bash
+cd test-apis/node
+npm start
+```
+
+To use a different port:
+
+```bash
+PORT=9000 npm start
+```
+
+Then use the matching base URL when running the tester:
+
+```bash
+api-tester run \
+  --spec test-apis/node/api-spec.yaml \
+  --base-url http://localhost:8002
+```
+
+### NestJS fixture
+
+Location: `test-apis/nestjs`. It requires Node.js 18 or newer and downloads
+its NestJS dependencies locally.
+
+```bash
+cd test-apis/nestjs
+npm install
+npm run start:dev
+```
+
+The tester command is:
+
+```bash
+api-tester run \
+  --spec test-apis/nestjs/api-spec.yaml \
+  --base-url http://localhost:8003
+```
+
+Use `npm run build` to compile the NestJS fixture without starting it.
+
+### What these fixtures test
+
+All three projects expose the same route families:
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Basic readiness check. |
+| `GET /api/v1/users` | Read-only list request with a query parameter. |
+| `GET /api/v1/users/{id}` | Path substitution and not-found handling. |
+| `POST /api/v1/users` | JSON body, validation, and mutation serialization. |
+| `PUT /api/v1/users/{id}` | Update behavior and validation errors. |
+| `DELETE /api/v1/users/{id}` | Safe not-found mutation case. |
+| `GET /api/v1/search?q=...` | Required query parameter. |
+| `GET /api/v1/admin/secret` | Authorization header and `--auth` negative case. |
+| `GET /api/v1/buggy` | Intentional `500` for diagnosis and reporting. |
+| `GET /api/v1/slow` | Delay control for timeout and concurrency experiments. |
+
+The `api-spec.yaml` file in each project is a hand-authored specification for
+the root tester. It includes tags, expected statuses, path values, query
+values, request bodies, and the authorization header. The intentionally broken
+route declares `200` while returning `500`, so it should create a failure. Use
+`--allow-failures` when you want to inspect that failure without a non-zero
+shell exit status.
+
+Example filtered run:
+
+```bash
+api-tester run \
+  --spec test-apis/node/api-spec.yaml \
+  --base-url http://localhost:8002 \
+  --include-prefix /api/v1/users \
+  --methods GET,POST \
+  --batch-size 2
+```
+
+## Test API command runbook
+
+For the complete copy-and-paste sequence, see the separate [Test API command
+runbook](TEST_API_COMMANDS.md). It covers selecting SQLite instead of
+PostgreSQL, installing every fixture, starting them one after another, testing
+them, exporting audits, and stopping services.
