@@ -1,0 +1,18 @@
+endpoints:
+  - method: GET
+    path: /health
+    expect_status: [200]
+  - method: GET
+    path: /users
+    expect_status: [200]
+  - method: POST
+    path: /users
+    body:
+      name: "Test User"
+      email: "test@example.com"
+    expect_status: [200, 201]
+  - method: GET
+    path: /users/{id}
+    path_params:
+      id: 1
+    expect_status: [200, 404]
