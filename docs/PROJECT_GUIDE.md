@@ -34,6 +34,7 @@ This document is written for two audiences at once. If you are new to APIs, star
   - [Reviewer](#reviewer)
 - [13. Git and safety behavior](#13-git-and-safety-behavior)
 - [14. Reports](#14-reports)
+  - [Terminal output and Rich](#terminal-output-and-rich)
 - [15. File-by-file reference](#15-file-by-file-reference)
 - [16. Common operating procedures](#16-common-operating-procedures)
 - [17. Troubleshooting](#17-troubleshooting)
@@ -100,6 +101,7 @@ The project is deliberately local-model oriented. It uses the Ollama Python clie
 │   ├── llm.py                  Ollama calls and JSON normalization
 │   ├── orchestrator.py         End-to-end pipeline
 │   ├── report.py               Markdown report writer
+│   ├── terminal.py             Shared Rich console and traceback setup
 │   ├── reviewer.py             Proposed-fix review
 │   ├── runner.py               Test-case generation and HTTP execution
 │   ├── safety.py               Git worktrees, diff guards, syntax checks
@@ -756,6 +758,14 @@ If no failures exist, it writes `_All tests passed._`.
 
 Existing reports in this repository are useful examples of the output format. They are generated artifacts and are excluded by `.gitignore`.
 
+### Terminal output and Rich
+
+Rich is the terminal presentation layer for the application. `api_tester/terminal.py` creates one shared `Console` with automatic terminal detection, markup support, disabled automatic highlighting, and soft wrapping. The CLI installs Rich tracebacks without exposing local variables, which keeps unexpected errors readable without printing sensitive process state.
+
+The shared console is used for model status, success/failure summaries, warnings, fix progress, verification output, commit messages, audit identifiers, and interactive commit prompts. `orchestrator.py` uses Rich `Progress` indicators for batches and diagnosis work. The `--help` screens are provided by Typer/Rich integration.
+
+Rich normally enables colors and styling only when the destination terminal supports them. When output is redirected or captured by CI, Rich degrades to plain text so logs remain readable. Markdown reports and JSON audit exports are intentionally written as files and are not formatted with terminal markup.
+
 ## 15. File-by-file reference
 
 ### `pyproject.toml`
@@ -831,7 +841,11 @@ Converts a `RunReport` into a timestamped Markdown file. It does not serialize r
 
 ### `api_tester/cli.py`
 
-Creates the Typer app, defines `run` and `smoke`, validates the optional source directory, prints configured models, invokes the async pipeline with `asyncio.run()`, writes the report, and returns a non-zero status for failed tests unless `--allow-failures` is used.
+Creates the Typer app, defines `run` and `smoke`, installs the shared Rich terminal configuration, validates the optional source directory, prints configured models, invokes the async pipeline with `asyncio.run()`, writes the report, and returns a non-zero status for failed tests unless `--allow-failures` is used.
+
+### `api_tester/terminal.py`
+
+Owns the shared Rich `Console` and `configure_terminal()`. Keeping this configuration in one module prevents the CLI and orchestrator from using inconsistent output settings. It also installs concise Rich tracebacks for command-line failures while leaving library imports free from terminal side effects until the CLI starts.
 
 ### `examples/endpoints.yaml`
 

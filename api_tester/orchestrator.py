@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .analyzer import analyze
@@ -22,8 +21,7 @@ from .safety import (
     is_git_repo,
 )
 from .schemas import Diagnosis, FixProposal, TestResult, Verdict
-
-console = Console()
+from .terminal import console
 
 @dataclass
 class FailureReport:
@@ -355,7 +353,7 @@ async def _run_pipeline_impl(spec_path: Path, endpoints: list,
             console.print(diff_text, markup=False)
             console.print("  ---- explanation ----")
             console.print(fix.explanation)
-            if input("  Commit to branch? [y/N] ").strip().lower() != "y":
+            if console.input("  Commit to branch? [y/N] ").strip().lower() != "y":
                 discard_patch(wt_path, source_dir)
                 fr.applied = False
                 continue

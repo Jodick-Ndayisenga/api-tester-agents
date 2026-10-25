@@ -5,14 +5,13 @@ import json
 from pathlib import Path
 
 import typer
-from rich.console import Console
-
 from .config import SETTINGS
 from .orchestrator import run_pipeline
 from .report import write_report
+from .terminal import configure_terminal, console
 
 app = typer.Typer(add_completion=False, help="Multi-agent API contract tester.")
-console = Console()
+configure_terminal()
 
 @app.command()
 def run(
